@@ -5,6 +5,9 @@ build/
 dist/
 wheels/
 *.egg-info
-
+qlibb/
+mlruns/
+mnt/
 # Virtual environments
 .venv
+*.txt
