@@ -11,9 +11,9 @@ import yfinance as yf
 # 用户可根据需要修改
 START_DATE = "2000-01-01"
 END_DATE = datetime.today().strftime("%Y-%m-%d")
-RAW_DIR = os.path.expanduser("~/qlib_csv/raw")
-PROC_DIR = os.path.expanduser("~/qlib_csv/processed")
-QLIB_DIR = os.path.expanduser("~/.qlib/qlib_data/my_us_data")
+RAW_DIR = os.path.expanduser("qlib_csv/raw")
+PROC_DIR = os.path.expanduser("qlib_csv/processed")
+QLIB_DIR = os.path.expanduser(".qlib/qlib_data/my_us_data")
 INCLUDE_FIELDS = "open,close,high,low,volume,factor"
 
 
@@ -108,4 +108,52 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # 使用 a+ 模式，如果文件不存在会自动创建；然后读写前把指针移到开头
+    with open('last_run.txt', 'a+') as f:
+        f.seek(0)
+        # 只读取第一行，避免文件里残留多行导致解析失败
+        date = f.readline().strip()
+        if date:
+            print(f"上次运行时间: {date}")
+            try:
+                last_dt = datetime.strptime(date, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                print("⚠️ 解析上次运行时间失败，跳过时间校验")
+                last_dt = None
+            if last_dt and last_dt < datetime.now() - pd.Timedelta(days=1):
+                print("上次运行超过24小时，重新运行脚本。")
+                if os.path.exists(RAW_DIR):
+                    print(f"清空 {RAW_DIR} 目录...")
+                    for file in os.listdir(RAW_DIR):
+                        os.remove(os.path.join(RAW_DIR, file))
+                if os.path.exists(PROC_DIR):
+                    print(f"清空 {PROC_DIR} 目录...")
+                    for file in os.listdir(PROC_DIR):
+                        os.remove(os.path.join(PROC_DIR, file))
+                if os.path.exists(QLIB_DIR):
+                    print(f"清空 {QLIB_DIR} 目录...")
+                    for file in os.listdir(QLIB_DIR):
+                        os.remove(os.path.join(QLIB_DIR, file))
+                print("重新运行脚本...")
+                f.seek(0)
+                f.truncate()
+                main()
+        else:
+            print("这是第一次运行脚本。")
+            main()
+        # 无论如何，将文件首行写成最新抓到的数据日期
+        from datetime import datetime as _dt
+        import pandas as _pd
+        # 遍历处理后的 CSV，找出最大日期
+        latest_date = None
+        for fn in os.listdir(PROC_DIR):
+            if fn.endswith(".csv"):
+                df_tmp = _pd.read_csv(os.path.join(PROC_DIR, fn), parse_dates=["date"], usecols=["date"])
+                maxd = df_tmp["date"].max()
+                if latest_date is None or maxd > latest_date:
+                    latest_date = maxd
+        # 如果没找到任何文件，则回退到当前时间
+        stamp = latest_date if latest_date is not None else _dt.now()
+        f.seek(0)
+        f.truncate()
+        f.write(stamp.strftime("%Y-%m-%d %H:%M:%S"))

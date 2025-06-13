@@ -5,7 +5,7 @@ warnings.filterwarnings(
     category=FutureWarning,
     message="The 'axis' keyword in DataFrame.groupby is deprecated and will be removed *")
 import traceback
-
+import random
 import sys
 import subprocess
 from pathlib import Path
@@ -15,6 +15,13 @@ import datetime
 import os
 import pandas as pd
 import shutil
+import torch
+import mlflow
+import logging
+from pathlib import Path
+import shutil
+import time
+import random
 
 import qlib
 from qlib.constant import REG_US
@@ -24,40 +31,53 @@ from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
 from qlib.data import D
 from qlib.data.dataset.handler import DataHandlerLP
 # 1. 下载官方 Qlib 美股 `.bin` 数据（如本地不存在才下载）
-US_DATA_DIR = Path.home() / ".qlib" / "qlib_data" / "my_us_data"
+US_DATA_DIR = Path(".qlib/qlib_data/my_us_data")
 # # 以下是好的，不要刪掉
-# if not US_DATA_DIR.exists() or not any(US_DATA_DIR.glob("*.bin")):
-#     print("Downloading US data via get_yahoo_data.py …")
-#     subprocess.run([
-#         "uv",
-#         "run",
-#         "get_yahoo_data.py",
-#     ], check=True)
-#     print("✓ Yahoo data fetched and dumped to Qlib format")
-# else:
-#     print("Qlib-format US data already present, skipping download.")
+if not US_DATA_DIR.exists() or not any(US_DATA_DIR.glob("*.bin")):
+    print("Downloading US data via get_yahoo_data.py …")
+    subprocess.run([
+        "uv",
+        "run",
+        "get_yahoo_data.py",
+    ], check=True)
+    print("✓ Yahoo data fetched and dumped to Qlib format")
+else:
+    print("Qlib-format US data already present, skipping download.")
 
-import random
+# ——— 在 uv run filter_stocks.py 之前插入 ———
+# 确保 instruments/all.txt 存在，否则 filter_stocks 会报错
+instruments_dir = US_DATA_DIR / "instruments"
+
+instruments_dir.mkdir(parents=True, exist_ok=True)
+all_file = instruments_dir / "all.txt"
+if not all_file.exists():
+    with open(all_file, "w", encoding="utf-8") as f:
+        # 取所有 .bin 文件名作为标的列表
+        for bin_path in US_DATA_DIR.glob("**/*.bin"):
+            f.write(bin_path.stem + "\n")
+# ————————————————————————————————
+# 接着再执行 filter_stocks.py
 subprocess.run([
     "uv",
     "run",
     "filter_stocks.py",
 ], check=True)
-qlib_data_path = os.path.expanduser("/home/charles/.qlib/qlib_data/my_us_data")
+
+qlib_data_path = os.path.expanduser(".qlib/qlib_data/my_us_data")
 filter_list = Path(qlib_data_path) / "instruments" / "filtered_all.txt"
 instruments_list = [s.strip() for s in open(filter_list, "r")]
 # instruments_list = instruments_list[:min(len(instruments_list) , 50)] # 限制最多 50 支股票
-instruments_list = random.sample(instruments_list,500) # 限制最多 50 支股票
+instruments_list = random.sample(instruments_list,250) # 限制最多 50 支股票
 
 # 2-3. 直接初始化 Qlib 指向官方 `us_data` 目录
 qlib.init(
-    provider_uri=str(Path.home() / ".qlib" / "qlib_data" / "my_us_data"),
+    provider_uri=US_DATA_DIR,
     region=REG_US,
     instruments_list = instruments_list,
     joblib_backend="sequential",
 )
 # 4. 手动递归查找 us_data 下所有 .bin 文件作为标的
-BASE_DIR = Path.home() / ".qlib" / "qlib_data" / "my_us_data"
+BASE_DIR = Path(".qlib/qlib_data/my_us_data")
 bin_files = list(BASE_DIR.glob("**/*.bin"))
 print(f"✓ 讀取到 {len(instruments_list)} 支股票")
 print(f"  股票代號: {instruments_list[:10]}{'...' if len(instruments_list) > 10 else ''}")
@@ -107,24 +127,28 @@ dh_cfg = {
     "fit_end_time": final_actual_end_str,
     "instruments": instruments_list,
 }
-stock2concept = str(Path.home()/".qlib/qlib_data/my_us_data/stock2concept.npy")
-stock_index    = str(Path.home()/".qlib/qlib_data/my_us_data/stock_index.npy")
+stock2concept = str(".qlib/qlib_data/my_us_data/stock2concept.npy")
+stock_index    = str(".qlib/qlib_data/my_us_data/stock_index.npy")
+
+# placeholder so we can override after computing real d_feat
+d_feat = None
 
 task = {
     "model": {
-        "class": "HIST",
-        "module_path": "qlib.contrib.model.pytorch_hist",
+        "class": "TransformerModel",
+        "module_path": "qlib.contrib.model.pytorch_transformer",
         "kwargs": {
-            "d_feat": 512,           # Alpha360 的输入维度
-            "hidden_size": 128,
-            "num_layers": 30,
+            "d_feat": d_feat,              # will be set later after prepare()
+            "nhead": 8,                    # multi-head 数
+            "num_layers": 4,               # encoder 层数
+            "dim_feedforward": 512,        # FFN 隐藏维度
             "dropout": 0.1,
-            "n_epochs": 2**16,
-            "lr": 0.0005,
+            "n_epochs": 2000,
+            "lr": 1e-6,
+            "batch_size": 64,
             "metric": "ic",
-            "early_stop": 15,
+            "early_stop": 10,
             "loss": "mse",
-            "base_model": "GRU",
             "stock2concept": stock2concept,
             "stock_index": stock_index,
             "optimizer": "adam",
@@ -176,7 +200,6 @@ print(f"Saved stock2concept.npy with shape {stock2concept.shape}.")
 print(f"Concept names written to concept_names.txt.")
 
 
-import torch
 
 # 在模型 fit 之前打印一下
 
@@ -196,12 +219,9 @@ task["dataset"]["kwargs"]["segments"] = {
 }
 
 
-import time
-import random
-
 
 timestamp = int(time.time())
-random_id = random.randint(1000, 9999)
+random_id = random.randint(100000, 999999)
 experiment_name = f"hist_train_us_new_{timestamp}_{random_id}"
 recorder_name = f"hist_rec_new_{timestamp}_{random_id}"
 
@@ -209,19 +229,14 @@ print(f"使用全新实验名称: {experiment_name}")
 WORK_DIR = Path(f"./snapshot_hist_clean_{random_id}/")
 
 try:
-    import mlflow
     # --- 1) 清理残留的 snapshot（checkpoint）目录 和 MLflow Run ---
     if mlflow.active_run() is not None:
         mlflow.end_run()
 
-    import logging
     # --- 2) 开啓更详细的日志 ---
     logging.basicConfig(level=logging.INFO)
     logging.getLogger("qlib").setLevel(logging.DEBUG)
 
-    # --- 3) 彻底清理所有可能的 checkpoint ---
-    from pathlib import Path
-    import shutil
 
     # 清理可能的 checkpoint 位置
     checkpoint_locations = [
@@ -251,16 +266,16 @@ try:
     dataset = init_instance_by_config(task["dataset"])
 
     # 拿一下一个样本的 feature 维度
-    sample = dataset.prepare(
-        "train", col_set=["feature"], data_key=DataHandlerLP.DK_I
-    )
-    # 如果 prepare 返回的是 (df_train, df_valid) 之类的 tuple，取第一个
-    if isinstance(sample, tuple):
-        sample_df = sample[0]
+    result = dataset.prepare("train", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
+    # 打印 NaN 检查
+    if isinstance(result, tuple):
+        print(result[0].isna().sum())
+        sample_df = result[0]
     else:
-        sample_df = sample
-    
-    # sample_df["feature"] 是个 ndarray，形状 [d_feat, T]
+        print(result.isna().sum())
+        sample_df = result
+     
+     # sample_df["feature"] 是个 ndarray，形状 [d_feat, T]
     d_feat = sample_df["feature"].iloc[0].shape[0]
     print(f"✓ 自动检测到特征维度 d_feat = {d_feat}")
 
@@ -356,8 +371,15 @@ try:
     # 创建最近数据集
     recent_dataset = init_instance_by_config(recent_dataset_cfg)
     
-    # 使用训练好的模型进行预测
-    predictions = model.predict(recent_dataset)
+    try:
+        predictions = model.predict(recent_dataset)
+    except ValueError as e:
+        if "not fitted yet" in str(e):
+            print("⚠️ 捕获到 model not fitted，开始 fit …")
+            model.fit(dataset)
+            predictions = model.predict(recent_dataset)
+        else:
+            raise
     
     # 准备增强版预测结果数据
     prediction_results = {
@@ -388,9 +410,9 @@ try:
         latest_predictions = {}
         
         # 获取最近几天的预测结果进行趋势分析
-        if len(unique_dates) >= 30:
+        if len(unique_dates) >= 7:
             # 获取最近30天的预测值用于趋势计算
-            recent_30_dates = unique_dates[-30:]
+            recent_30_dates = unique_dates[-7:]
             
             for instrument in instruments_list:
                 daily_preds = []
@@ -515,6 +537,36 @@ try:
                     "volatility": round(volatility * 100, 2)  # 转换为百分比
                 }
                 
+                # 在这里添加新的预测指标计算
+                import numpy as np
+                from math import exp
+
+                # 1) T+1 return（假设 base_pred 就是对数收益率预测）
+                ret_1d = base_pred
+
+                # 2) Up/Down 概率，用 sigmoid 把回归值映射成 [0,1]
+                up_prob_1d = 1 / (1 + exp(-ret_1d * 10))  # 10 是缩放系数，可调
+
+                # 3) 多步回归/分类
+                horizons = [1, 3, 5, 10]
+                multi_ret = {f"ret_{h}d": (exp(ret_1d) - 1) * h for h in horizons}
+                multi_prob = {f"up_prob_{h}d": 1 / (1 + exp(-multi_ret[f"ret_{h}d"] * 10)) for h in horizons}
+
+                # 4) 因子分数直接就是 ret_1d
+                alpha_score = ret_1d
+
+                # 把新指标放到 stock_data
+                stock_data.update({
+                    "ret_1d": round(ret_1d, 6),
+                    "up_prob_1d": round(up_prob_1d, 4),
+                    "alpha_score": round(alpha_score, 6),
+                })
+                # 合并 multi-step
+                for k, v in multi_ret.items():
+                    stock_data[k] = round(v, 6)
+                for k, v in multi_prob.items():
+                    stock_data[k] = round(v, 4)
+
                 daily_data["stocks"][instrument] = stock_data
                 daily_predictions.append(future_pred)
             
@@ -528,6 +580,15 @@ try:
                     "neutral_ratio": round(daily_signals["HOLD"] / len(daily_predictions) * 100, 1),
                     "total_stocks": len(daily_predictions)
                 }
+            
+            # 5) 排名任务
+            rets = {s: d["ret_1d"] for s, d in daily_data["stocks"].items()}
+            # 从大到小排序，取 top 10
+            ranked = sorted(rets.items(), key=lambda x: x[1], reverse=True)
+            daily_data["ranking"] = {
+                "top_10": [sym for sym, _ in ranked[:10]],
+                "bottom_10": [sym for sym, _ in ranked[-10:]],
+            }
             
             prediction_results["daily_predictions"][future_date_str] = daily_data
             all_predictions.extend(daily_predictions)

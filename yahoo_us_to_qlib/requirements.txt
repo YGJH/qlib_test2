@@ -1,0 +1,54 @@
+import os
+import fire
+from pathlib import Path
+from qlib import init
+from data_collector.yahoo.collector import YahooCollectorUS1d, YahooNormalize1d
+
+# Define the directories for saving data
+BASE_DIR = Path.home() / ".qlib" / "qlib_data"
+SOURCE_DIR = BASE_DIR / "us_data_source"
+NORMALIZE_DIR = BASE_DIR / "us_data_normalized"
+
+# Ensure directories exist
+SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+NORMALIZE_DIR.mkdir(parents=True, exist_ok=True)
+
+class StockDataFetcher:
+    def __init__(self, region='US', interval='1d'):
+        self.region = region
+        self.interval = interval
+
+    def fetch_and_convert(self, start_date='2020-01-01', end_date=None):
+        # Initialize Qlib
+        init(provider_uri=str(BASE_DIR / f"{self.region.lower()}_data"))
+
+        # Create a collector instance
+        collector = YahooCollectorUS1d(
+            save_dir=str(SOURCE_DIR),
+            start=start_date,
+            end=end_date,
+            interval=self.interval,
+            max_workers=4,
+            delay=0.5
+        )
+
+        # Collect data
+        collector.collector_data()
+
+        # Normalize the collected data
+        self.normalize_data()
+
+    def normalize_data(self):
+        # Create a normalizer instance
+        normalizer = YahooNormalize1d(date_field_name='date', symbol_field_name='symbol')
+
+        # Iterate through collected files and normalize them
+        for csv_file in SOURCE_DIR.glob("*.csv"):
+            df = normalizer.normalize(pd.read_csv(csv_file))
+            # Save the normalized data
+            normalized_file_path = NORMALIZE_DIR / csv_file.name
+            df.to_csv(normalized_file_path, index=False)
+            print(f"Normalized data saved to {normalized_file_path}")
+
+if __name__ == "__main__":
+    fire.Fire(StockDataFetcher)

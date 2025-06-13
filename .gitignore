@@ -7,11 +7,10 @@ wheels/
 *.egg-info
 qlibb/
 mlruns/
+qlib_csv/
+
 mnt/
 # Virtual environments
 .venv
-*.txt
-qlib/
-qlibb/
-yahoo_us_to_qlib/
+*.json
 snapshot*/
