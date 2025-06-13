@@ -1,25 +1,32 @@
-import pandas as pd
-import pickle
-import qlib
-from qlib.data import D
-calendar = pd.read_pickle("/home/charles/.qlib/qlib_data/us_stocks_yahoo/calendars/day.pkl")
-print(calendar.min(), calendar.max())
+from pathlib import Path
+import torch
+from qlib.contrib.model.pytorch_hist import HIST
 
-symbol = "aapl"  # 替換為你要檢查的股票代碼
-file_path = f"/home/charles/.qlib/qlib_data/us_stocks_yahoo/features/{symbol}/close.pkl"
-with open(file_path, "rb") as f:
-    data = pickle.load(f)
-print(data.head())
-calendar = pd.read_pickle("/home/charles/.qlib/qlib_data/us_stocks_yahoo/calendars/day.pkl")
-print(calendar.min(), calendar.max())
-# Date range
-start_date = "2010-01-01"
-end_date = "2025-06-11"
-qlib.init(provider_uri="/home/charles/.qlib/qlib_data/us_stocks_yahoo", region="us", joblib="sequential")
-print(f"Checking data for {symbol}...")
+# 一定要给全量跟 main.py 一致的参数，
+# 包括 stock2concept、stock_index、n_epochs、metric、early_stop、loss、GPU
+HOME = Path.home() / ".qlib" / "qlib_data" / "my_us_data"
+work_dir = Path(__file__).parent / "snapshot_hist_clean_v8"
+work_dir.mkdir(parents=True, exist_ok=True)
 
-data = D.features(["aapl"], ["close"], start_time="2010-01-01", end_time="2025-06-11", freq="day")
-if data.empty:
-    print("No data available for AAPL.")
-else:
-    print(data.head())
+model = HIST(
+    d_feat=360,
+    hidden_size=128,
+    num_layers=3,
+    dropout=0.1,
+    n_epochs=100,
+    lr=0.0005,
+    metric="ic",
+    early_stop=15,
+    loss="mse",
+    base_model="GRU",
+    stock2concept=str(HOME/"stock2concept.npy"),
+    stock_index=str(HOME/"stock_index.npy"),
+    optimizer="adam",
+    GPU=0,
+    seed=42,
+    work_dir=str(work_dir),
+)
+
+ckpt_path = work_dir / "hist_us.pth"
+torch.save(model.HIST_model.state_dict(), ckpt_path)
+print(f"✓ 已生成符合 main.py 配置的 checkpoint: {ckpt_path}")

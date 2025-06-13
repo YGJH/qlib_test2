@@ -37,7 +37,7 @@ for stock in stocks:
         if data.empty:
             print(f"No data for {stock} in the range {start_date} to {end_date}.")
         else:
-            print(f"Data for {stock}: {data.head()}")
+            # print(f"Data for {stock}: {data.head()}")
             valid_stocks.append(stock)
     except Exception as e:
         print(f"Error loading data for {stock}: {e}")
@@ -45,7 +45,6 @@ for stock in stocks:
 # Write filtered instruments
 with open(filtered_instruments_file, "w", encoding="utf-8") as f:
     for stock in valid_stocks:
-        print(f"Valid stock: {stock}")
         f.write(f"{stock}\n")
 
 print(f"Filtered instruments written to {filtered_instruments_file}")

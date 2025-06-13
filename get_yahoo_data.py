@@ -10,7 +10,7 @@ import yfinance as yf
 
 # 用户可根据需要修改
 START_DATE = "2000-01-01"
-END_DATE = "2025-06-10"
+END_DATE = datetime.today().strftime("%Y-%m-%d")
 RAW_DIR = os.path.expanduser("~/qlib_csv/raw")
 PROC_DIR = os.path.expanduser("~/qlib_csv/processed")
 QLIB_DIR = os.path.expanduser("~/.qlib/qlib_data/my_us_data")

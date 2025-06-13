@@ -11,3 +11,7 @@ mnt/
 # Virtual environments
 .venv
 *.txt
+qlib/
+qlibb/
+yahoo_us_to_qlib/
+snapshot*/
