@@ -14,3 +14,4 @@ mnt/
 .venv
 *.json
 snapshot*/
+.qlib/
