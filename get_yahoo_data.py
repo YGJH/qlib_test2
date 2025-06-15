@@ -4,12 +4,13 @@ import os
 import sys
 import subprocess
 from datetime import datetime
+import shutil
 
 import pandas as pd
 import yfinance as yf
 
 # 用户可根据需要修改
-START_DATE = "2000-01-01"
+START_DATE = "2010-01-01"
 END_DATE = datetime.today().strftime("%Y-%m-%d")
 RAW_DIR = os.path.expanduser("qlib_csv/raw")
 PROC_DIR = os.path.expanduser("qlib_csv/processed")
@@ -84,7 +85,7 @@ def dump_to_qlib(csv_path: str, qlib_path: str, fields: str):
         "dump_all",
         "--csv_path", csv_path,
         "--qlib_dir", qlib_path,
-        "--include_fields", fields
+        "--include_fields", fields,
     ]
     print("Running:", " ".join(cmd))
     subprocess.check_call(cmd)
@@ -120,8 +121,8 @@ if __name__ == "__main__":
             except ValueError:
                 print("⚠️ 解析上次运行时间失败，跳过时间校验")
                 last_dt = None
-            if last_dt and last_dt < datetime.now() - pd.Timedelta(days=1):
-                print("上次运行超过24小时，重新运行脚本。")
+            if last_dt and last_dt < datetime.now() - pd.Timedelta(days=2):
+                print("上次运行超过48小时，重新运行脚本。")
                 if os.path.exists(RAW_DIR):
                     print(f"清空 {RAW_DIR} 目录...")
                     for file in os.listdir(RAW_DIR):
@@ -132,8 +133,12 @@ if __name__ == "__main__":
                         os.remove(os.path.join(PROC_DIR, file))
                 if os.path.exists(QLIB_DIR):
                     print(f"清空 {QLIB_DIR} 目录...")
-                    for file in os.listdir(QLIB_DIR):
-                        os.remove(os.path.join(QLIB_DIR, file))
+                    for entry in os.listdir(QLIB_DIR):
+                        path = os.path.join(QLIB_DIR, entry)
+                        if os.path.isfile(path):
+                            os.remove(path)
+                        else:
+                            shutil.rmtree(path)
                 print("重新运行脚本...")
                 f.seek(0)
                 f.truncate()
@@ -153,6 +158,7 @@ if __name__ == "__main__":
                 if latest_date is None or maxd > latest_date:
                     latest_date = maxd
         # 如果没找到任何文件，则回退到当前时间
+        print(f"現在總共有 {len(os.listdir(PROC_DIR))} 个处理后的 CSV 文件。")
         stamp = latest_date if latest_date is not None else _dt.now()
         f.seek(0)
         f.truncate()

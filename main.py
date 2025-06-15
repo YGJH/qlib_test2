@@ -67,7 +67,7 @@ qlib_data_path = os.path.expanduser(".qlib/qlib_data/my_us_data")
 filter_list = Path(qlib_data_path) / "instruments" / "filtered_all.txt"
 instruments_list = [s.strip() for s in open(filter_list, "r")]
 # instruments_list = instruments_list[:min(len(instruments_list) , 50)] # 限制最多 50 支股票
-instruments_list = random.sample(instruments_list,250) # 限制最多 50 支股票
+instruments_list = random.sample(instruments_list,200) # 限制最多 50 支股票
 
 # 2-3. 直接初始化 Qlib 指向官方 `us_data` 目录
 qlib.init(
@@ -143,7 +143,7 @@ task = {
             "num_layers": 4,               # encoder 层数
             "dim_feedforward": 512,        # FFN 隐藏维度
             "dropout": 0.1,
-            "n_epochs": 2000,
+            "n_epochs": 20000,
             "lr": 1e-6,
             "batch_size": 64,
             "metric": "ic",

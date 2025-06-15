@@ -8,10 +8,11 @@ wheels/
 qlibb/
 mlruns/
 qlib_csv/
-
+.qlib
+.qlib/*
 mnt/
 # Virtual environments
 .venv
 *.json
 snapshot*/
-.qlib/
+.qlib/**

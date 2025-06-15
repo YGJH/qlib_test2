@@ -16,6 +16,7 @@ from ...log import get_module_logger
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 
 from ...model.base import Model
 from ...data.dataset import DatasetH
@@ -29,14 +30,15 @@ class TransformerModel(Model):
         self,
         d_feat: int = 20,
         d_model: int = 64,
-        batch_size: int = 2048,
         nhead: int = 2,
         num_layers: int = 2,
+        dim_feedforward: int = 512,      # <-- add this parameter
         dropout: float = 0,
+        batch_size: int = 2048,
         n_epochs=100,
         lr=0.0001,
         metric="",
-        early_stop=5,
+        early_stop=2**10,
         loss="mse",
         optimizer="adam",
         reg=1e-3,
@@ -48,6 +50,7 @@ class TransformerModel(Model):
         # set hyper-parameters.
         self.d_model = d_model
         self.dropout = dropout
+        self.dim_feedforward = dim_feedforward  # <-- record for use
         self.n_epochs = n_epochs
         self.lr = lr
         self.reg = reg
@@ -66,7 +69,17 @@ class TransformerModel(Model):
             np.random.seed(self.seed)
             torch.manual_seed(self.seed)
 
-        self.model = Transformer(d_feat, d_model, nhead, num_layers, dropout, self.device)
+        # build the Transformer wrapper (pass FFN hidden size and device)
+        self.model = Transformer(
+            d_feat=d_feat,
+            d_model=d_model,
+            nhead=nhead,
+            num_layers=num_layers,
+            dim_feedforward=self.dim_feedforward,
+            dropout=dropout,
+            device=self.device,
+            batch_first=True,  # optional: enable batch_first for efficiency
+        )
         if optimizer.lower() == "adam":
             self.train_optimizer = optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=self.reg)
         elif optimizer.lower() == "gd":
@@ -86,29 +99,64 @@ class TransformerModel(Model):
         return torch.mean(loss)
 
     def loss_fn(self, pred, label):
-        mask = ~torch.isnan(label)
-
-        if self.loss == "mse":
-            return self.mse(pred[mask], label[mask])
-
-        raise ValueError("unknown loss `%s`" % self.loss)
+        # 支持单任务或双任务预测
+        if pred.dim() == 1 or (pred.dim() == 2 and pred.size(1) == 1):
+            # 只有一个输出（return）
+            return F.mse_loss(pred.view(-1), label.view(-1))
+        elif pred.dim() == 2 and pred.size(1) == 2:
+            # 双头输出：return & volatility
+            ret_pred, vol_pred = pred[:, 0], pred[:, 1]
+            # label 可能是一维（只含 return）或二维
+            if label.dim() == 1:
+                ret_label = label
+                vol_label = torch.zeros_like(ret_label)
+            else:
+                ret_label, vol_label = label[:, 0], label[:, 1]
+            loss_ret = F.mse_loss(ret_pred, ret_label)
+            loss_vol = F.mse_loss(vol_pred, vol_label)
+            return loss_ret + 0.5 * loss_vol
+        else:
+            raise ValueError(f"Unsupported pred shape: {pred.shape}")
 
     def metric_fn(self, pred: torch.Tensor, label: torch.Tensor):
-        mask = torch.isfinite(label)
+        # 處理雙頭輸出：只用第一個頭（return）來計算 metric
+        if pred.dim() == 2 and pred.size(1) == 2:
+            pred = pred[:, 0]  # 只取 return 預測，忽略 volatility
+        
+        # 確保 pred 和 label 都是一維
+        pred_flat = pred.view(-1)
+        label_flat = label.view(-1)
+        
+        # 檢查有效數據
+        mask = torch.isfinite(label_flat) & torch.isfinite(pred_flat)
+        
+        if mask.sum() == 0:
+            return 0.0
+            
+        pred_valid = pred_flat[mask]
+        label_valid = label_flat[mask]
 
         if self.metric in ("", "loss"):
-            return -self.loss_fn(pred[mask], label[mask])
+            return -self.loss_fn(pred_valid, label_valid)
         elif self.metric == "ic":
-            # Information Coefficient (Pearson correlation between pred and label)
-            pred_flat = pred.view(-1)
-            label_flat = label.view(-1)
-            pred_mean = pred_flat.mean()
-            label_mean = label_flat.mean()
-            cov = ((pred_flat - pred_mean) * (label_flat - label_mean)).mean()
-            denom = pred_flat.std() * label_flat.std()
-            return (cov / denom).item() if denom != 0 else 0.0
+            # Information Coefficient (Pearson correlation)
+            if len(pred_valid) < 2:
+                return 0.0
+                
+            pred_mean = pred_valid.mean()
+            label_mean = label_valid.mean()
+            
+            cov = ((pred_valid - pred_mean) * (label_valid - label_mean)).mean()
+            pred_std = pred_valid.std()
+            label_std = label_valid.std()
+            
+            if pred_std == 0 or label_std == 0:
+                return 0.0
+            
+            ic = cov / (pred_std * label_std)
+            return float(ic)
         else:
-            raise ValueError("unknown metric `%s`" % self.metric)
+            return -self.loss_fn(pred_valid, label_valid).item()
 
     def train_epoch(self, x_train, y_train):
         x_train_values = x_train.values
@@ -131,7 +179,7 @@ class TransformerModel(Model):
 
             self.train_optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_value_(self.model.parameters(), 3.0)
+            torch.nn.utils.clip_grad_value_(self.model.parameters(), 1.0)
             self.train_optimizer.step()
 
     def test_epoch(self, data_x, data_y):
@@ -143,6 +191,8 @@ class TransformerModel(Model):
 
         scores = []
         losses = []
+        all_pred = []
+        all_label = []
 
         indices = np.arange(len(x_values))
 
@@ -156,13 +206,40 @@ class TransformerModel(Model):
             with torch.no_grad():
                 pred = self.model(feature)
                 loss = self.loss_fn(pred, label)
+                loss = torch.nan_to_num(loss, nan=1e3, posinf=1e3, neginf=-1e3)
                 losses.append(loss.item())
 
                 score = self.metric_fn(pred, label)
-                # metric_fn 返回的可能是 tensor 或 float，统一转为 float
                 scores.append(float(score))
+                
+                # 收集預測和標籤用於最終計算
+                all_pred.append(pred.detach().cpu())
+                all_label.append(label.detach().cpu())
 
-        return np.mean(losses), np.mean(scores)
+        # 检查 all_pred 是否为空，避免 torch.cat 错误
+        if len(all_pred) == 0:
+            self.logger.warning("No valid batches found in test_epoch, returning default values")
+            return 1e3, 0.0
+
+        # 计算整体 Information Coefficient
+        preds_cat = torch.cat(all_pred)  # [N, 2] 或 [N, 1]
+        labels_cat = torch.cat(all_label)  # [N] 或 [N, 1]
+        
+        # 只用 return 頭計算最終 metric
+        if preds_cat.dim() == 2 and preds_cat.size(1) == 2:
+            pred_for_metric = preds_cat[:, 0]  # 只取 return 預測
+        else:
+            pred_for_metric = preds_cat.view(-1)
+            
+        label_for_metric = labels_cat.view(-1)
+        ic_score = self.metric_fn(pred_for_metric, label_for_metric)
+
+        # 返回平均 loss 和整體 IC
+        if len(losses) == 0:
+            avg_loss = 1e3
+        else:
+            avg_loss = float(torch.tensor(losses).mean())
+        return avg_loss, float(ic_score)
 
     def fit(
         self,
@@ -198,6 +275,7 @@ class TransformerModel(Model):
             self.logger.info("training...")
             self.train_epoch(x_train, y_train)
             self.logger.info("evaluating...")
+            # test_epoch 现在只返回 (loss, score)
             train_loss, train_score = self.test_epoch(x_train, y_train)
             val_loss, val_score = self.test_epoch(x_valid, y_valid)
             self.logger.info("train %.6f, valid %.6f" % (train_score, val_score))
@@ -266,30 +344,55 @@ class PositionalEncoding(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, d_feat=6, d_model=8, nhead=4, num_layers=2, dropout=0.5, device=None):
-        super(Transformer, self).__init__()
-        self.feature_layer = nn.Linear(d_feat, d_model)
-        self.pos_encoder = PositionalEncoding(d_model)
-        self.encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout)
-        self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
-        self.decoder_layer = nn.Linear(d_model, 1)
-        self.device = device
+    def __init__(
+        self,
+        d_feat: int,
+        d_model: int,
+        nhead: int,
+        num_layers: int,
+        dim_feedforward: int,
+        dropout: float,
+        device: torch.device,
+        batch_first: bool = False,
+    ):
+        super().__init__()
+        # record input feature dim for reshape in forward
         self.d_feat = d_feat
+        # map raw features [*, F] -> model dimension [*, d_model]
+        self.feature_layer = nn.Linear(d_feat, d_model)
+        # positional encoding for Transformer
+        from .pytorch_transformer import PositionalEncoding
+        self.pos_encoder = PositionalEncoding(d_model)
 
-    def forward(self, src):
-        # src [N, F*T] --> [N, T, F]
-        src = src.reshape(len(src), self.d_feat, -1).permute(0, 2, 1)
-        src = self.feature_layer(src)
+        # build Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=batch_first,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        # decoder heads: return + volatility
+        self.head_return = nn.Linear(d_model, 1)
+        self.head_vol    = nn.Linear(d_model, 1)
 
-        # src [N, T, F] --> [T, N, F], [60, 512, 8]
-        src = src.transpose(1, 0)  # not batch first
+        self.device = device
+        self.to(device)
 
-        mask = None
-
-        src = self.pos_encoder(src)
-        output = self.transformer_encoder(src, mask)  # [60, 512, 8]
-
-        # [T, N, F] --> [N, T*F]
-        output = self.decoder_layer(output.transpose(1, 0)[:, -1, :])  # [512, 1]
-
-        return output.squeeze()
+    def forward(self, src: torch.Tensor) -> torch.Tensor:
+        # ensure src has shape [B, F, T]
+        if src.dim() == 2:
+            # single time step case: [B, F] → [B, F, 1]
+            src = src.unsqueeze(2)
+        elif src.dim() != 3:
+            raise ValueError(f"Transformer.forward expected src dim=2 or 3, got {src.dim()}")
+        # src: [B, F, T] → [B, T, F]
+        x = src.permute(0, 2, 1)              # [B,T,F]
+        x = self.pos_encoder(self.feature_layer(x))  # [B,T,d_model]
+        out = self.transformer_encoder(x)     # [B,T,d_model]
+        last = out[:, -1, :]                  # [B,d_model]
+        # 两个头分别算收益与波动
+        ret  = self.head_return(last)         # [B,1]
+        vol  = self.head_vol(last).abs()      # [B,1] 取正
+        return torch.cat([ret, vol], dim=1)   # [B,2]

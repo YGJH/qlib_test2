@@ -1,6 +1,10 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+import os, sys
+# —— ensure project root is on PYTHONPATH so “import qlib” works —— 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import abc
 import shutil
 import traceback
@@ -15,7 +19,6 @@ import pandas as pd
 from tqdm import tqdm
 from loguru import logger
 from qlib.utils import fname_to_code, code_to_fname
-
 
 class DumpDataBase:
     INSTRUMENTS_START_FIELD = "start_datetime"
