@@ -11,6 +11,9 @@ from abc import ABC
 import multiprocessing
 from pathlib import Path
 from typing import Iterable
+import os
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "/mnt/c/Users/charless/Documents/qlib_test2"))
+sys.path.insert(0, project_root)
 
 import fire
 import requests
@@ -19,6 +22,7 @@ import pandas as pd
 from loguru import logger
 from yahooquery import Ticker
 from dateutil.tz import tzlocal
+from concurrent.futures import ThreadPoolExecutor
 
 import qlib
 from qlib.data import D
@@ -28,7 +32,7 @@ from qlib.constant import REG_CN as REGION_CN
 
 CUR_DIR = Path(__file__).resolve().parent
 sys.path.append(str(CUR_DIR.parent.parent))
-
+import multiprocessing
 from dump_bin import DumpDataUpdate
 from data_collector.base import BaseCollector, BaseNormalize, BaseRun, Normalize
 from data_collector.utils import (
@@ -54,7 +58,7 @@ class YahooCollector(BaseCollector):
         start=None,
         end=None,
         interval="1d",
-        max_workers=4,
+        max_workers=ThreadPoolExecutor()._max_workers or multiprocessing.cpu_count() * 2,
         max_collector_count=2,
         delay=0,
         check_data_length: int = None,
@@ -204,11 +208,15 @@ class YahooCollector(BaseCollector):
 
 class YahooCollectorCN(YahooCollector, ABC):
     def get_instrument_list(self):
-        logger.info("get HS stock symbols......")
-        symbols = get_hs_stock_symbols()
-        logger.info(f"get {len(symbols)} symbols.")
-        return symbols
-
+        # logger.info("get HS stock symbols......")
+        # try:
+        #     symbols = get_hs_stock_symbols()
+        # except Exception as e:
+        #     logger.warning(f"skip get_hs_stock_symbols() due to: {e}")
+        #     symbols = []
+        # logger.info(f"get {len(symbols)} symbols.")
+        return []
+    
     def normalize_symbol(self, symbol):
         symbol_s = symbol.split(".")
         symbol = f"sh{symbol_s[0]}" if symbol_s[-1] == "ss" else f"sz{symbol_s[0]}"
@@ -240,6 +248,9 @@ class YahooCollectorCN1d(YahooCollectorCN):
                 logger.warning(f"get {_index_name} error: {e}")
                 continue
             df.columns = ["date", "open", "close", "high", "low", "volume", "money", "change"]
+            # strip trailing time component if present before parsing
+            if df["date"].dtype == object:
+                df["date"] = df["date"].astype(str).str.split().str[0]
             df["date"] = pd.to_datetime(df["date"])
             df = df.astype(float, errors="ignore")
             df["adjclose"] = df["close"]
@@ -254,8 +265,9 @@ class YahooCollectorCN1d(YahooCollectorCN):
 
 class YahooCollectorCN1min(YahooCollectorCN):
     def get_instrument_list(self):
-        symbols = super(YahooCollectorCN1min, self).get_instrument_list()
-        return symbols + ["000300.ss", "000905.ss", "000903.ss"]
+        # symbols = super(YahooCollectorCN1min, self).get_instrument_list()
+        return []
+        # return symbols + ["000300.ss", "000905.ss", "000903.ss"]
 
     def download_index_data(self):
         pass
@@ -293,10 +305,11 @@ class YahooCollectorUS1min(YahooCollectorUS):
 
 class YahooCollectorIN(YahooCollector, ABC):
     def get_instrument_list(self):
-        logger.info("get INDIA stock symbols......")
-        symbols = get_in_stock_symbols()
-        logger.info(f"get {len(symbols)} symbols.")
-        return symbols
+        # logger.info("get INDIA stock symbols......")
+        # symbols = get_in_stock_symbols()
+        # logger.info(f"get {len(symbols)} symbols.")
+        # return symbols
+        return []
 
     def download_index_data(self):
         pass
@@ -338,12 +351,13 @@ class YahooCollectorBR(YahooCollector, ABC):
         raise NotImplementedError
 
     def get_instrument_list(self):
-        logger.info("get BR stock symbols......")
-        symbols = get_br_stock_symbols() + [
-            "^BVSP",
-        ]
-        logger.info(f"get {len(symbols)} symbols.")
-        return symbols
+        # logger.info("get BR stock symbols......")
+        # symbols = get_br_stock_symbols() + [
+        #     "^BVSP",
+        # ]
+        # logger.info(f"get {len(symbols)} symbols.")
+        # return symbols
+        return []
 
     def download_index_data(self):
         pass
@@ -366,12 +380,12 @@ class YahooCollectorBR1min(YahooCollectorBR):
 
 class YahooNormalize(BaseNormalize):
     COLUMNS = ["open", "close", "high", "low", "volume"]
-    DAILY_FORMAT = "%Y-%m-%d"
+    DAILY_FORMAT = "%Y-%m-%d %H:%M:%S"
 
     @staticmethod
     def calc_change(df: pd.DataFrame, last_close: float) -> pd.Series:
         df = df.copy()
-        _tmp_series = df["close"].fillna(method="ffill")
+        _tmp_series = df["close"].ffill()
         _tmp_shift_series = _tmp_series.shift(1)
         if last_close is not None:
             _tmp_shift_series.iloc[0] = float(last_close)
@@ -392,6 +406,9 @@ class YahooNormalize(BaseNormalize):
         columns = copy.deepcopy(YahooNormalize.COLUMNS)
         df = df.copy()
         df.set_index(date_field_name, inplace=True)
+        # strip trailing time component if present before parsing
+        if df.index.dtype == object:
+            df.index = df.index.astype(str).str.split().str[0]
         df.index = pd.to_datetime(df.index)
         df.index = df.index.tz_localize(None)
         df = df[~df.index.duplicated(keep="first")]
@@ -450,7 +467,7 @@ class YahooNormalize(BaseNormalize):
 
 
 class YahooNormalize1d(YahooNormalize, ABC):
-    DAILY_FORMAT = "%Y-%m-%d"
+    DAILY_FORMAT = "%Y-%m-%d %H:%M:%S"
 
     def adjusted_price(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -459,7 +476,7 @@ class YahooNormalize1d(YahooNormalize, ABC):
         df.set_index(self._date_field_name, inplace=True)
         if "adjclose" in df:
             df["factor"] = df["adjclose"] / df["close"]
-            df["factor"] = df["factor"].fillna(method="ffill")
+            df["factor"] = df["factor"].fillna(1)
         else:
             df["factor"] = 1
         for _col in self.COLUMNS:
@@ -796,7 +813,7 @@ class Run(BaseRun):
             # get 1m data
             $ python collector.py download_data --source_dir ~/.qlib/stock_data/source --region CN --start 2020-11-01 --end 2020-11-10 --delay 0.1 --interval 1m
         """
-        if self.interval == "1d" and pd.Timestamp(end) > pd.Timestamp(datetime.datetime.now().strftime("%Y-%m-%d")):
+        if self.interval == "1d" and pd.Timestamp(end) > pd.Timestamp(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")):
             raise ValueError(f"end_date: {end} is greater than the current date.")
 
         super(Run, self).download_data(max_collector_count, delay, start, end, check_data_length, limit_nums)
@@ -928,8 +945,8 @@ class Run(BaseRun):
         self.download_data(
             max_collector_count,
             delay,
-            start.strftime("%Y-%m-%d"),
-            end.strftime("%Y-%m-%d"),
+            start.strftime("%Y-%m-%d %H:%M:%S"),
+            end.strftime("%Y-%m-%d %H:%M:%S"),
             check_data_length,
             limit_nums,
         )
@@ -937,6 +954,7 @@ class Run(BaseRun):
     def update_data_to_bin(
         self,
         qlib_data_1d_dir: str,
+        trading_date: str = None,
         end_date: str = None,
         check_data_length: int = None,
         delay: float = 1,
@@ -948,7 +966,8 @@ class Run(BaseRun):
         ----------
         qlib_data_1d_dir: str
             the qlib data to be updated for yahoo, usually from: https://github.com/microsoft/qlib/tree/main/scripts#download-cn-data
-
+        trading_date: str
+            start trading date, if None, will use the last trading date from the calendar; by default None
         end_date: str
             end datetime, default ``pd.Timestamp(trading_date + pd.Timedelta(days=1))``; open interval(excluding end)
         check_data_length: int
@@ -977,11 +996,14 @@ class Run(BaseRun):
             )
 
         # start/end date
-        calendar_df = pd.read_csv(Path(qlib_data_1d_dir).joinpath("calendars/day.txt"))
-        trading_date = (pd.Timestamp(calendar_df.iloc[-1, 0]) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        if trading_date is None:
+            calendar_df = pd.read_csv(Path(qlib_data_1d_dir).joinpath("calendars/day.txt"))
+            trading_date = (pd.Timestamp(calendar_df.iloc[-1, 0]) - pd.Timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            trading_date = pd.Timestamp(trading_date).strftime("%Y-%m-%d %H:%M:%S")
 
         if end_date is None:
-            end_date = (pd.Timestamp(trading_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            end_date = (pd.Timestamp(trading_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
 
         # download data from yahoo
         # NOTE: when downloading data from YahooFinance, max_workers is recommended to be 1

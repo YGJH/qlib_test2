@@ -16,3 +16,4 @@ mnt/
 *.json
 snapshot*/
 .qlib/**
+full_version/

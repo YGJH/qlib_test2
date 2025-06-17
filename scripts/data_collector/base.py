@@ -304,8 +304,16 @@ class Normalize:
         # NOTE: It has been reported that there may be some problems here, and the specific issues will be dealt with when they are identified.
         df = self._normalize_obj.normalize(df)
         if df is not None and not df.empty:
+            # strip trailing time component if present (e.g., "YYYY-MM-DD 00:00:00")
+            df[self._date_field_name] = (
+                df[self._date_field_name].astype(str).str.split().str[0]
+            )
+            # parse date strings
+            df[self._date_field_name] = pd.to_datetime(
+                df[self._date_field_name]
+            )
             if self._end_date is not None:
-                _mask = pd.to_datetime(df[self._date_field_name]) <= pd.Timestamp(self._end_date)
+                _mask = df[self._date_field_name] <= pd.Timestamp(self._end_date)
                 df = df[_mask]
             df.to_csv(self._target_dir.joinpath(file_path.name), index=False)
 

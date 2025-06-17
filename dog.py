@@ -18,8 +18,30 @@ import torch
 import subprocess
 from scipy import stats
 
-# from multi_step_forecast import forecast_multi_step  # add this import
+from qlib.contrib.data.handler import Alpha360
+from qlib.data.dataset import DataHandlerLP
+from qlib.data.dataset.handler import DataHandler
 
+# Custom Alpha360 handler that ensures proper DatetimeIndex
+class FixedAlpha360(Alpha360):
+    def __init__(self, *args, **kwargs):
+        # Add our custom processor before the default ones
+        from qlib.data.dataset.processor import ProcessInf, Fillna
+        
+        infer_processors = kwargs.get('infer_processors', [])
+        if not infer_processors:
+            # Use proper processor configuration format
+            infer_processors = [
+                {"class": "FixDatetimeIndex", "module_path": "dog"},
+                {"class": "ProcessInf", "module_path": "qlib.data.dataset.processor"},
+                {"class": "Fillna", "module_path": "qlib.data.dataset.processor"}
+            ]
+        else:
+            # Insert our fix at the beginning
+            infer_processors = [{"class": "FixDatetimeIndex", "module_path": "dog"}] + infer_processors
+        kwargs['infer_processors'] = infer_processors
+        
+        super().__init__(*args, **kwargs)
 
 
 def chunks(lst, n):
@@ -163,8 +185,7 @@ def load_task_config(instruments_list: list):
     # 计算特征维度
     d_feat = None
     try:
-        from qlib.contrib.data.handler import Alpha360
-        handler = Alpha360(**dh_cfg)
+        handler = FixedAlpha360(**dh_cfg)
         temp_data = handler.fetch()
         if hasattr(temp_data, 'feature') and temp_data.feature is not None:
             d_feat = temp_data.feature.shape[1]
@@ -204,8 +225,8 @@ def load_task_config(instruments_list: list):
             "module_path": "qlib.data.dataset",
             "kwargs": {
                 "handler": {
-                    "class": "Alpha360",
-                    "module_path": "qlib.contrib.data.handler",
+                    "class": "FixedAlpha360",
+                    "module_path": "dog",
                     "kwargs": dh_cfg,
                 },
                 "segments": {
@@ -227,17 +248,33 @@ def download_yahoo_data():
     如果数据已存在则跳过下载。
     """
     US_DATA_DIR = Path(".qlib/qlib_data/my_us_data")
-    # # 以下是好的，不要刪掉
-    if not US_DATA_DIR.exists() or not any(US_DATA_DIR.glob("*.bin")):
-        print("Downloading US data via get_yahoo_data.py …")
-        subprocess.run([
-            "uv",
-            "run",
-            "get_yahoo_data.py",
-        ], check=True)
-        print("✓ Yahoo data fetched and dumped to Qlib format")
-    else:
-        print("Qlib-format US data already present, skipping download.")
+    # 以下是好的，不要刪掉
+    """
+    如果遇到 pandas.errors.EmptyDataError: No columns to parse from file
+    那是因為下面這個腳本是update_data_to_bin
+    需要先執行 scripts/get_data.py 下載原始數據到 .qlib/qlib_data/my_us_data
+    這樣才能update
+    命令:
+    uv run scripts/get_data.py qlib_data \
+    --target_dir .qlib/qlib_data/my_us_data \
+    --region us
+    """
+    print("Downloading US data via collector.py …")
+    cmd = [
+        "uv",
+        "run",
+        "scripts/data_collector/yahoo/collector.py",
+        "update_data_to_bin",
+        "--qlib_data_1d_dir",
+        str(US_DATA_DIR),
+        "--trading_date",
+        "2021-01-01",
+        "--end_date",
+        (datetime.now() - pd.Timedelta(days=2)).strftime("%Y-%m-%d"),
+    ]
+    print("Running:", " ".join(cmd))
+    subprocess.run(cmd, check=True)        
+    print("✓ 以成功下载并转换数据到 Qlib 格式。")
 
 def get_instruments_list():
     # ——— 在 uv run filter_stocks.py 之前插入 ———
@@ -265,7 +302,7 @@ def get_instruments_list():
     filter_list = Path(qlib_data_path) / "instruments" / "filtered_all.txt"
     instruments_list = [s.strip() for s in open(filter_list, "r")]
     # random.shuffle(instruments_list)  # 随机打乱顺序
-    return instruments_list
+    return instruments_list[:400]
 
 def save_predictions_to_json(preds: dict, out_json: str):
     """
@@ -922,6 +959,37 @@ def generate_stock_recommendations(predictions):
     
     return recommendations
 
+
+# Custom processor to fix datetime index before ProcessInf
+from qlib.data.dataset.processor import Processor
+
+class FixDatetimeIndex(Processor):
+    """Fix datetime index to ensure it's a proper DatetimeIndex"""
+    
+    def __call__(self, df):
+        if df is None or df.empty:
+            return df
+            
+        # Check if we have a MultiIndex with datetime level
+        if hasattr(df, 'index') and hasattr(df.index, 'nlevels') and df.index.nlevels == 2:
+            try:
+                # Get the datetime level (typically level 1)
+                datetime_level = df.index.get_level_values(1)
+                
+                # If it's not already a DatetimeIndex, convert it
+                if not isinstance(datetime_level, pd.DatetimeIndex):
+                    instruments = df.index.get_level_values(0)
+                    new_datetime = pd.to_datetime(datetime_level)
+                    new_index = pd.MultiIndex.from_arrays(
+                        [instruments, new_datetime],
+                        names=df.index.names
+                    )
+                    df.index = new_index
+                    
+            except Exception as e:
+                print(f"Warning: Could not fix datetime index: {e}")
+                
+        return df
 
 if __name__ == "__main__":
 

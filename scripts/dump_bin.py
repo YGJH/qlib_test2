@@ -1,10 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-import os, sys
-# —— ensure project root is on PYTHONPATH so “import qlib” works —— 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
 import abc
 import shutil
 import traceback
@@ -19,6 +15,7 @@ import pandas as pd
 from tqdm import tqdm
 from loguru import logger
 from qlib.utils import fname_to_code, code_to_fname
+
 
 class DumpDataBase:
     INSTRUMENTS_START_FIELD = "start_datetime"
@@ -176,12 +173,9 @@ class DumpDataBase:
 
     def save_calendars(self, calendars_data: list):
         self._calendars_dir.mkdir(parents=True, exist_ok=True)
-        calendars_path = self._calendars_dir.joinpath(f"{self.freq}.txt").expanduser().resolve()
-        # 先把传入的日期列表转成 datetime，并丢掉所有缺失值
-        dates = pd.to_datetime(calendars_data, errors="coerce").dropna()
-        # 然后安全地格式化为字符串
-        result_calendars_list = [d.strftime(self.calendar_format) for d in dates]
-        np.savetxt(str(calendars_path), result_calendars_list, fmt="%s", encoding="utf-8")
+        calendars_path = str(self._calendars_dir.joinpath(f"{self.freq}.txt").expanduser().resolve())
+        result_calendars_list = [self._format_datetime(x) for x in calendars_data]
+        np.savetxt(calendars_path, result_calendars_list, fmt="%s", encoding="utf-8")
 
     def save_instruments(self, instruments_data: Union[list, pd.DataFrame]):
         self._instruments_dir.mkdir(parents=True, exist_ok=True)
